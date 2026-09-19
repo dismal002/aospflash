@@ -1,0 +1,163 @@
+<!doctype html>
+<!--
+  Copyright (C) 2025 The Android Open Source Project
+  Licensed under the Apache License, Version 2.0.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>adb over WebUSB</title>
+<style>
+  :root { color-scheme: light dark; --fg: #16181d; --bg: #fbfbfa; --line: #d6d3ce; --accent: #2f6f4e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e6e4e0; --bg: #16181d; --line: #35383f; --accent: #7fc9a2; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.25rem; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 52rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  p.sub { margin: 0 0 1.75rem; opacity: .7; }
+  button {
+    font: inherit; padding: .45rem .9rem; border: 1px solid var(--line); border-radius: 6px;
+    background: transparent; color: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  input {
+    font: inherit; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 6px;
+    background: transparent; color: inherit; flex: 1; min-width: 12rem;
+  }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+  section { border-top: 1px solid var(--line); padding-top: 1.25rem; margin-top: 1.25rem; }
+  section[hidden] { display: none; }
+  h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .07em; opacity: .55; margin: 0 0 .75rem; }
+  pre {
+    margin: 0; padding: .85rem; border: 1px solid var(--line); border-radius: 6px;
+    background: color-mix(in srgb, var(--fg) 4%, transparent);
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    white-space: pre-wrap; overflow-x: auto; max-height: 24rem;
+  }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1rem; margin: 0; font-size: .9rem; }
+  dt { opacity: .6; }
+  dd { margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: .85rem; word-break: break-all; }
+  .note { font-size: .85rem; opacity: .65; margin-top: 1.5rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>adb over WebUSB</h1>
+  <p class="sub">A direct port of the AOSP client. No adb server, no native helper.</p>
+
+  <div class="row">
+    <button id="connect">Connect a device</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <span id="status" style="opacity:.7"></span>
+  </div>
+
+  <section id="info" hidden>
+    <h2>Device</h2>
+    <dl id="properties"></dl>
+  </section>
+
+  <section id="console" hidden>
+    <h2>Shell</h2>
+    <div class="row">
+      <input id="command" value="getprop ro.build.fingerprint" spellcheck="false">
+      <button id="run">Run</button>
+      <button id="ls">List /sdcard</button>
+    </div>
+    <pre id="output">Ready.</pre>
+  </section>
+
+  <p class="note">
+    WebUSB needs a secure context, so serve this over https or localhost. On Linux
+    you also need a udev rule granting your user access to the device.
+  </p>
+</main>
+
+<script type="module">
+import { Adb, isDirectory } from '../src/index.js';
+
+const $ = (id) => document.getElementById(id);
+let adb = null;
+
+const setStatus = (text) => { $('status').textContent = text; };
+const print = (text) => { $('output').textContent = text; };
+
+$('connect').addEventListener('click', async () => {
+  $('connect').disabled = true;
+  setStatus('requesting device…');
+  try {
+    adb = await Adb.connect();
+    setStatus('connected');
+    $('disconnect').disabled = false;
+    $('info').hidden = false;
+    $('console').hidden = false;
+
+    const properties = $('properties');
+    properties.replaceChildren();
+    const rows = {
+      serial: adb.serial,
+      type: adb.connection.deviceType,
+      ...adb.product,
+      features: [...adb.features].join(', '),
+      'max payload': `${adb.connection.maxPayload} bytes`,
+      'delayed ack': adb.connection.supportsDelayedAck ? 'yes' : 'no',
+    };
+    for (const [name, value] of Object.entries(rows)) {
+      const dt = document.createElement('dt');
+      dt.textContent = name;
+      const dd = document.createElement('dd');
+      dd.textContent = value || '—';
+      properties.append(dt, dd);
+    }
+  } catch (error) {
+    setStatus('');
+    print(`Connect failed: ${error.message}`);
+    $('connect').disabled = false;
+  }
+});
+
+$('disconnect').addEventListener('click', async () => {
+  await adb?.close();
+  adb = null;
+  $('disconnect').disabled = true;
+  $('connect').disabled = false;
+  $('info').hidden = true;
+  $('console').hidden = true;
+  setStatus('');
+});
+
+$('run').addEventListener('click', async () => {
+  if (!adb) return;
+  print('running…');
+  try {
+    const { stdout, stderr, exitCode } = await adb.exec($('command').value);
+    print([stdout, stderr && `stderr:\n${stderr}`, exitCode !== null && `exit ${exitCode}`]
+      .filter(Boolean).join('\n'));
+  } catch (error) {
+    print(`Error: ${error.message}`);
+  }
+});
+
+$('ls').addEventListener('click', async () => {
+  if (!adb) return;
+  print('listing…');
+  try {
+    const entries = await adb.list('/sdcard');
+    print(entries
+      .filter((entry) => entry.name !== '.' && entry.name !== '..')
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => `${isDirectory(entry.mode) ? 'd' : '-'} ${String(entry.size).padStart(10)}  ${entry.name}`)
+      .join('\n') || '(empty)');
+  } catch (error) {
+    print(`Error: ${error.message}`);
+  }
+});
+</script>
+</body>
+</html>

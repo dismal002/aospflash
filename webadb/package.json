@@ -1,0 +1,19 @@
+{
+  "name": "adb-webusb",
+  "version": "0.1.0",
+  "description": "An adb client speaking the AOSP wire protocol directly over WebUSB.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["src", "LICENSE", "NOTICE", "README.md"],
+  "scripts": {
+    "test": "node test/selftest.mjs && node test/loopback.mjs && node test/sync.mjs",
+    "demo": "python3 -m http.server 8000"
+  },
+  "keywords": ["adb", "android", "webusb", "aosp"],
+  "engines": { "node": ">=18" }
+}

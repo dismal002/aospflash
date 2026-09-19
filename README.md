@@ -1,0 +1,2 @@
+# aospflash
+I have built aospflash as a component for AOSP ideally to be included under vendor/external or platform-tools. It is a replacement for (Flashstation) flash.android.com and allows for flashing full factory images and support for incremental updates is in the works. It is extremely early stage and by no means complete yet and will not be submitted for review to AOSP until significant testing has been completed.

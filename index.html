@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Open Flash Tool</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Flex:opsz,wght@10..144,600..800&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css?v=7">
+<script>
+  // Runs before first paint. Deliberately plain ES5 (no const/arrow fns) so that
+  // even IE can execute it -- IE ignores <script type="module"> entirely, so
+  // app.js could never make this check for us.
+  (function () {
+    var ua = navigator.userAgent || '';
+    var isChromium = false;
+    var brands = navigator.userAgentData && navigator.userAgentData.brands;
+    if (brands) {
+      // Chrome, Edge, Brave, Opera, ... all report a "Chromium" brand.
+      for (var i = 0; i < brands.length; i++) {
+        if (brands[i].brand === 'Chromium') { isChromium = true; break; }
+      }
+    } else {
+      // Older Chromium without UA-CH. Legacy (EdgeHTML) Edge also says "Chrome/"
+      // but tags itself "Edge/", and Chrome for iOS (CriOS) is really WebKit.
+      isChromium = /(Chrome|Chromium)\/\d+/.test(ua) && !/Edge\/\d+/.test(ua);
+    }
+
+    // Phones and tablets (Android or iOS) can't run the flash flow either, even
+    // in Chrome, so they get the same fallback plus an explanatory banner.
+    var uad = navigator.userAgentData;
+    var isMobile = !!(uad && uad.mobile) ||
+      /Android|iPhone|iPad|iPod|Mobile/i.test(ua) ||
+      // iPadOS 13+ reports itself as a Mac; the only multi-touch "Macs" are iPads.
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+    var cls = '';
+    if (!isChromium || isMobile) cls += ' unsupported-browser';
+    if (isMobile) cls += ' mobile-device';
+    document.documentElement.className += cls;
+  })();
+</script>
+</head>
+<body>
+  <header class="app-bar">
+    <span class="app-bar-title">Open Flash Tool</span>
+    <div class="app-bar-actions">
+      <button type="button" class="icon-btn" id="app-bar-settings" aria-label="Settings" title="Settings">
+        <span class="material-symbols-outlined" aria-hidden="true">settings</span>
+      </button>
+      <button type="button" class="icon-btn" id="app-bar-help" aria-label="Help" title="Help">
+        <span class="material-symbols-outlined" aria-hidden="true">help</span>
+      </button>
+      <button type="button" class="icon-btn" id="app-bar-report" aria-label="Report an issue" title="Report an issue">
+        <span class="material-symbols-outlined" aria-hidden="true">bug_report</span>
+      </button>
+    </div>
+  </header>
+
+  <main id="splash-view" class="view">
+    <div class="mark">
+      <span class="material-symbols-outlined">smartphone</span>
+    </div>
+
+    <h1>Welcome to Android Open Source Project Flash Tool</h1>
+    <p class="lede">
+      You can use this tool to install Android builds on your devices.
+    </p>
+    <p class="lede">
+      This tool allows you to flash Android onto recent Pixel devices and some Android development devices
+      (<a class="link" href="#">view supported devices</a>).
+    </p>
+
+    <h2 class="steps-title">Install a build in three steps</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="icon">
+          <span class="material-symbols-outlined">devices_other</span>
+        </div>
+        <p>Connect your device over USB</p>
+      </div>
+      <span class="arrow">→</span>
+      <div class="step">
+        <div class="icon">
+          <span class="material-symbols-outlined">compare_arrows</span>
+        </div>
+        <p>Choose the build to install</p>
+      </div>
+      <span class="arrow">→</span>
+      <div class="step">
+        <div class="icon">
+          <span class="material-symbols-outlined">download</span>
+        </div>
+        <p>Flash it to your device</p>
+      </div>
+    </div>
+
+    <div class="cta">
+      <button class="btn-filled" id="get-started-btn">
+        Get started
+      </button>
+
+      <div class="error-banner mobile-banner" id="mobile-banner">
+        <span class="material-symbols-outlined">error</span>
+        <span>If you are trying to install a build on this device, you must visit this site on a desktop using the latest version of Chrome or Edge.</span>
+      </div>
+
+      <div class="unsupported" id="unsupported-browser">
+        <p class="unsupported-msg">
+          This service requires features not supported by your current browser.<br>
+          We recommend the latest versions of Chrome or Edge on Desktop.
+        </p>
+        <a class="link unsupported-details" href="https://developer.mozilla.org/en-US/docs/Web/API/WebUSB_API#browser_compatibility" target="_blank" rel="noopener">More details</a>
+        <div class="unsupported-action">
+          <a class="btn-filled" href="https://www.google.com/chrome/" target="_blank" rel="noopener">
+            Download Chrome
+            <span class="material-symbols-outlined">open_in_new</span>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <p class="footnote">
+      By continuing you agree to (Name)'s terms of use.
+    </p>
+  </main>
+
+  <section id="build-view" class="view" hidden>
+    <div class="signin-banner">
+      <span class="material-symbols-outlined">info</span>
+      <span>You are not currently signed in</span>
+      <button class="btn-outlined">Sign in</button>
+    </div>
+
+    <div class="select-card">
+      <div class="select-card-head">
+        <h3 id="card-title">Select a build</h3>
+        <div class="head-icons" id="head-icons">
+          <span class="head-icon is-active" data-step="device" title="Connect a device">
+            <span class="material-symbols-outlined head-icon-glyph">devices</span>
+            <span class="material-symbols-outlined head-icon-badge">check_circle</span>
+          </span>
+          <span class="head-icon" data-step="build" title="Choose a build">
+            <span class="material-symbols-outlined head-icon-glyph">compare_arrows</span>
+            <span class="material-symbols-outlined head-icon-badge">check_circle</span>
+          </span>
+          <span class="head-icon" data-step="flash" title="Flash the build">
+            <span class="material-symbols-outlined head-icon-glyph">download</span>
+            <span class="material-symbols-outlined head-icon-badge">check_circle</span>
+          </span>
+        </div>
+      </div>
+
+      <p class="field-label">Selected device:</p>
+
+      <div class="device-box" id="no-device-panel">
+        <p class="no-device">No devices available</p>
+        <p class="sub-text">Manually add a new device by following the steps below.</p>
+
+        <div class="mini-step">
+          <div class="mini-icon"><span class="material-symbols-outlined">code</span></div>
+          <div>
+            <p class="mini-title">Step 1: Enable developer mode</p>
+            <p class="mini-text"><a class="link js-dev-options" href="#">Follow these steps</a> to enable USB debugging and OEM unlocking. If your device is already in the bootloader, you can skip this step.</p>
+          </div>
+        </div>
+        <div class="mini-step">
+          <div class="mini-icon"><span class="material-symbols-outlined">cable</span></div>
+          <div>
+            <p class="mini-title">Step 2: Plug in your device</p>
+            <p class="mini-text">Connect your device using any USB data cable.</p>
+          </div>
+        </div>
+        <div class="mini-step">
+          <div class="mini-icon"><span class="material-symbols-outlined">phonelink_setup</span></div>
+          <div>
+            <p class="mini-title">Step 3: Select device</p>
+            <p class="mini-text">Click "Add new device" below. If the browser prompt doesn't appear or your device isn't listed, see the <a class="link js-troubleshoot" href="#">troubleshooting tips</a>.</p>
+          </div>
+        </div>
+
+        <div class="device-actions">
+          <a class="link js-troubleshoot" href="#">Troubleshooting tips</a>
+          <button class="btn-outlined" id="add-device-btn">
+            <span class="material-symbols-outlined">add</span>
+            Add new device
+          </button>
+        </div>
+      </div>
+
+      <div class="device-connected" id="device-connected-panel" hidden>
+        <span class="material-symbols-outlined device-thumb">tablet_mac</span>
+        <div class="device-info">
+          <p class="device-name">Reference Tablet (kestrel)</p>
+          <p class="device-meta">
+            8C3F2QRT01AB <span class="material-symbols-outlined copy-icon">content_copy</span>
+            <span class="meta-sep">|</span>
+            RT2A.250912.004 (18823310) <span class="material-symbols-outlined copy-icon">content_copy</span>
+          </p>
+          <span class="status-chip" id="device-status-chip"><span class="material-symbols-outlined">warning</span> Connected (slow)</span>
+        </div>
+        <span class="material-symbols-outlined chevron">expand_more</span>
+      </div>
+
+      <div id="find-build-empty">
+        <p class="field-label" style="margin-top:24px;">Find a build to flash</p>
+        <div class="warning-box">
+          <span class="material-symbols-outlined">warning</span>
+          <p>Select a device from the list above to populate available builds.</p>
+        </div>
+      </div>
+
+      <div id="find-build-connected" hidden>
+        <p class="field-label" style="margin-top:24px;">Find a build to flash</p>
+        <div class="search-box">
+          <span class="material-symbols-outlined">search</span>
+          <input type="text" placeholder="Search by branch, target or build ID" />
+        </div>
+        <p class="sub-text">Enter a target (e.g. kestrel-user), build ID (e.g. 18823310), or release name (e.g. RT2A.250912.004).</p>
+
+        <p class="field-label" style="margin-top:22px; font-weight:500; color:var(--on-surface);">Recommended builds for kestrel</p>
+
+        <div class="branch-group">
+          <p class="branch-title">Canary releases <span class="material-symbols-outlined">expand_less</span></p>
+          <a class="build-chip" href="#">Canary 202609</a>
+        </div>
+        <div class="branch-group">
+          <p class="branch-title">QPR2 preview releases <span class="material-symbols-outlined">expand_less</span></p>
+          <a class="build-chip" href="#">Beta 3</a>
+        </div>
+        <div class="branch-group">
+          <p class="branch-title">QPR1 preview releases <span class="material-symbols-outlined">expand_less</span></p>
+          <a class="build-chip" href="#">Beta 6</a>
+        </div>
+        <div class="branch-group">
+          <p class="branch-title">Public releases <span class="material-symbols-outlined">expand_less</span></p>
+          <a class="build-chip build-chip-wide" href="#">
+            Back to public
+            <span class="build-chip-sub">Factory reset the device to the latest public build.</span>
+          </a>
+        </div>
+        <a class="link more-releases" href="#">
+          More releases
+          <span class="build-chip-sub">A full list of public releases for this device.</span>
+        </a>
+      </div>
+
+      <div id="build-selected-panel" hidden>
+        <p class="field-label" style="margin-top:24px;">Selected build:</p>
+        <div class="build-selected" id="build-summary-view">
+          <span class="material-symbols-outlined build-thumb">deployed_code</span>
+          <div class="build-info">
+            <p class="build-name">RT2A.250912.004 (18823310)</p>
+            <p class="build-meta">kestrel-user (signed) <span class="meta-sep">|</span> 17.0.0 (Android 17) <span class="meta-sep">|</span> API level 37</p>
+            <div class="build-tags">
+              <span class="tag">Wipe</span>
+              <span class="tag">Lock</span>
+              <span class="tag">Force flash</span>
+            </div>
+          </div>
+          <span class="material-symbols-outlined edit-icon" title="Edit flash options" id="edit-options-btn">edit</span>
+        </div>
+
+        <div class="build-options" id="build-options-view" hidden>
+          <span class="material-symbols-outlined build-thumb">deployed_code</span>
+          <div class="build-options-body">
+            <p class="build-name" id="options-build-name"></p>
+
+            <div class="options-field">
+              <label for="target-select">Selected Target</label>
+              <select class="target-select" id="target-select"></select>
+            </div>
+
+            <div class="checkbox-grid">
+              <label class="checkbox-item">
+                <input type="checkbox" id="opt-wipe" checked>
+                Wipe Device
+                <span class="material-symbols-outlined info-icon" title="Erases all user data on the device before flashing.">help</span>
+              </label>
+              <label class="checkbox-item">
+                <input type="checkbox" id="opt-lock">
+                Lock Bootloader
+                <span class="material-symbols-outlined info-icon" title="Re-locks the bootloader once flashing finishes.">help</span>
+              </label>
+            </div>
+
+            <a class="advanced-toggle link" href="#" id="advanced-toggle">
+              Advanced Options
+              <span class="material-symbols-outlined" id="advanced-toggle-icon">expand_less</span>
+            </a>
+            <div class="checkbox-grid" id="advanced-options">
+              <label class="checkbox-item">
+                <input type="checkbox" id="opt-force" checked>
+                Force Flash all Partitions
+                <span class="material-symbols-outlined info-icon" title="Flashes every partition even if the build's requirements aren't met.">help</span>
+              </label>
+              <label class="checkbox-item">
+                <input type="checkbox" id="opt-disable-verity">
+                Disable Verity
+                <span class="material-symbols-outlined info-icon" title="Disables dm-verity on the flashed partitions.">help</span>
+              </label>
+              <label class="checkbox-item">
+                <input type="checkbox" id="opt-disable-verification">
+                Disable Verification
+                <span class="material-symbols-outlined info-icon" title="Disables AVB verification on the flashed partitions.">help</span>
+              </label>
+              <label class="checkbox-item">
+                <input type="checkbox" id="opt-skip-secondary">
+                Skip Secondary
+                <span class="material-symbols-outlined info-icon" title="Doesn't flash the secondary (_other) slot images.">help</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="error-banner" id="device-disconnected-banner" hidden>
+          <span class="material-symbols-outlined">error</span>
+          Device not connected
+        </div>
+
+        <div class="build-selected-actions" id="build-selected-actions">
+          <a class="link" href="#" id="pick-different-build">Select a different build</a>
+          <button class="btn-filled" id="install-build-btn" style="height:40px; padding:0 20px; font-size:14px;">Install build</button>
+        </div>
+
+        <div id="install-progress" hidden>
+          <p class="field-label" style="margin-top:24px;">Current status:</p>
+          <div class="status-box" id="status-box"></div>
+          <ul class="warn-list" style="margin-top:16px;">
+            <li><span class="material-symbols-outlined">error</span> Do not interact with the device unless instructed to by this page.</li>
+            <li><span class="material-symbols-outlined">error</span> Do not unplug your device.</li>
+          </ul>
+        </div>
+      </div>
+      <template id="status-row-template">
+        <div class="status-row">
+          <span class="status-icon material-symbols-outlined"></span>
+          <div>
+            <p class="status-title"></p>
+            <p class="status-sub"></p>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <section id="settings-view" class="view" hidden>
+    <div class="settings-head">
+      <button type="button" class="icon-btn" id="settings-back" aria-label="Back" title="Back">
+        <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
+      </button>
+      <h2 class="settings-title">Settings</h2>
+    </div>
+
+    <div class="select-card">
+      <h3 class="settings-section-title" id="adb-keys-heading">ADB keys</h3>
+      <p class="settings-desc">
+        ADB uses an RSA key so a device can recognize computers it has connected to before. These are the keys
+        this tool presents to your device, in order. Each key is identified by the fingerprint the device shows
+        when it asks you to allow USB debugging.
+        <a class="link" href="https://developer.android.com/studio/command-line/adb" target="_blank" rel="noopener">About adb</a>
+      </p>
+
+      <ul class="key-list" id="adb-key-list" aria-labelledby="adb-keys-heading"></ul>
+      <p class="key-empty" id="adb-key-empty" hidden>
+        No keys yet. One is generated automatically the first time you connect a device, or you can generate or upload one below.
+      </p>
+
+      <div class="settings-actions">
+        <button type="button" class="text-btn primary" id="adb-key-upload">Upload key</button>
+        <button type="button" class="text-btn primary" id="adb-key-generate">Generate key</button>
+        <button type="button" class="text-btn primary" id="adb-key-refresh">Refresh</button>
+        <input type="file" id="adb-key-file" hidden>
+      </div>
+      <p class="settings-status" id="adb-key-status" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <div class="modal-overlay" id="confirm-modal" hidden>
+    <div class="modal-card">
+      <span class="material-symbols-outlined modal-icon">devices</span>
+      <h3 class="modal-title">Confirm and install</h3>
+
+      <p class="field-label">Selected device:</p>
+      <div class="modal-row">
+        <span class="material-symbols-outlined modal-row-icon">tablet_mac</span>
+        <div>
+          <p class="modal-row-title">Reference Tablet (kestrel)</p>
+          <p class="modal-row-sub">8C3F2QRT01AB<span class="meta-sep">&nbsp;|&nbsp;</span>RT2A.250912.004 (18823310)</p>
+        </div>
+      </div>
+
+      <p class="field-label" style="margin-top:18px;">Selected build:</p>
+      <div class="modal-row">
+        <span class="material-symbols-outlined modal-row-icon">download</span>
+        <div>
+          <p class="modal-row-title">RT2A.250912.004 (18823310)</p>
+          <p class="modal-row-sub">kestrel-user (signed)<span class="meta-sep">&nbsp;|&nbsp;</span>17.0.0 (Android 17)<span class="meta-sep">&nbsp;|&nbsp;</span>API level 37</p>
+          <div class="build-tags" style="margin-top:8px;">
+            <span class="tag">Wipe</span>
+            <span class="tag">Lock</span>
+            <span class="tag">Force flash</span>
+          </div>
+        </div>
+      </div>
+
+      <p class="field-label" style="margin-top:20px; font-weight:500; color:var(--on-surface);">During the installation process:</p>
+      <ul class="warn-list">
+        <li><span class="material-symbols-outlined">error</span> Factory reset will erase all data on the device. Back up anything you want to keep first.</li>
+        <li><span class="material-symbols-outlined">error</span> Do not interact with the device unless instructed to by this page.</li>
+        <li><span class="material-symbols-outlined">error</span> Do not unplug your device during installation.</li>
+      </ul>
+
+      <p class="modal-note"><strong>Warning:</strong> installing a build may erase all data on the device, and unlocking the bootloader will make it less secure.</p>
+      <p class="modal-note">Installed apps and their data will be removed and cannot be recovered from this tool. Make sure anything you want to keep is backed up before continuing.</p>
+      <p class="modal-note">Downloading and using this build may be subject to your organization's additional terms.</p>
+
+      <div class="modal-actions">
+        <button class="text-btn" id="confirm-cancel">Cancel</button>
+        <button class="text-btn primary" id="confirm-install">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="troubleshoot-modal" hidden>
+    <div class="modal-card trouble-card" role="dialog" aria-modal="true" aria-labelledby="troubleshoot-title">
+      <span class="material-symbols-outlined modal-icon trouble-icon">error</span>
+      <h3 class="modal-title" id="troubleshoot-title">Having trouble connecting your device?</h3>
+
+      <div class="trouble-section">
+        <h4>Chrome menu didn't appear</h4>
+        <ul class="check-list">
+          <li>
+            <span class="material-symbols-outlined">check</span>
+            <span>Check that Chrome allows websites to ask for access to USB devices. Go to Settings &gt; Advanced &gt; Site Settings &gt; USB Devices.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="trouble-section">
+        <h4>Phone wasn't listed in the Chrome menu</h4>
+        <ul class="check-list">
+          <li>
+            <span class="material-symbols-outlined">check</span>
+            <span>Disconnect and reconnect the USB cable. Then try connecting again.</span>
+          </li>
+          <li>
+            <span class="material-symbols-outlined">check</span>
+            <span>Try a different USB cable.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="trouble-section">
+        <h4>Phone was listed but unable to connect</h4>
+        <ul class="check-list">
+          <li>
+            <span class="material-symbols-outlined">check</span>
+            <span>Ensure that you have correctly <a class="link" href="#" id="prepared-device-link">prepared your device</a>.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-tonal" id="troubleshoot-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="dev-options-modal" hidden>
+    <div class="modal-card dev-card" role="dialog" aria-modal="true" aria-labelledby="dev-options-title">
+      <div class="dev-head">
+        <span class="material-symbols-outlined modal-icon">devices</span>
+        <h3 class="modal-title" id="dev-options-title">Enable Developer Options</h3>
+      </div>
+
+      <p class="dev-intro">To fully prepare your device and enable it to connect, update the following 3 settings. If your device is in the bootloader you can skip this process.</p>
+
+      <div class="dev-setting">
+        <div class="dev-illus" aria-hidden="true">
+          <span class="illus-label">BUILD ID 101112</span>
+          <span class="illus-ring"><span class="material-symbols-outlined">touch_app</span></span>
+        </div>
+        <div class="dev-body">
+          <h4>Setting 1: Enable Developer Options Menu</h4>
+          <p class="dev-desc">Tap the Build Number option 7 times to enable developer options.</p>
+          <p class="dev-path">Android P+ (9.0+) - Settings &gt; About Phone &gt; Build Number</p>
+          <p class="dev-path">Android O (8.0) - Settings &gt; System &gt; About Phone &gt; Build Number</p>
+          <p class="dev-path">Android N and before - Settings &gt; About Phone &gt; Build Number</p>
+        </div>
+      </div>
+
+      <div class="dev-setting">
+        <div class="dev-illus" aria-hidden="true">
+          <span class="illus-label">USB debugging</span>
+          <span class="illus-ring"><span class="illus-toggle"></span></span>
+        </div>
+        <div class="dev-body">
+          <h4>Setting 2: Enable USB Debugging</h4>
+          <p class="dev-desc">Toggle the USB debugging setting on within developer options menu.</p>
+          <p class="dev-path">Android P+ (9.0+) - Settings &gt; System &gt; Advanced &gt; Developer Options &gt; USB debugging</p>
+          <p class="dev-path">Android O (8.0) - Settings &gt; System &gt; Developer Options &gt; USB debugging</p>
+          <p class="dev-path">Android N and before - Settings &gt; Developer Options &gt; USB debugging</p>
+        </div>
+      </div>
+
+      <div class="dev-setting">
+        <div class="dev-illus" aria-hidden="true">
+          <span class="illus-label">OEM Unlocking</span>
+          <span class="illus-ring"><span class="illus-toggle"></span></span>
+        </div>
+        <div class="dev-body">
+          <h4>Setting 3: Enable OEM Unlocking</h4>
+          <p class="dev-desc">Toggle the OEM unlocking setting on in the developer options menu.</p>
+          <p class="dev-path">Android P+ (9.0+) - Settings &gt; System &gt; Advanced &gt; Developer Options &gt; OEM unlocking</p>
+          <p class="dev-path">Android O (8.0) - Settings &gt; System &gt; Developer Options &gt; OEM unlocking</p>
+          <p class="dev-path">Android N and before - Settings &gt; Developer Options &gt; OEM unlocking</p>
+        </div>
+      </div>
+
+      <p class="dev-note">If the option is grayed out with "Bootloader is already unlocked" or is already toggled on, then skip this step. If you are unable to enable the option, ensure the device is connected to the internet or <a class="link" href="#" id="oem-instructions-link">follow these instructions</a>.</p>
+
+      <div class="modal-actions">
+        <button class="btn-tonal" id="dev-options-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="delete-key-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="delete-key-title">
+      <span class="material-symbols-outlined modal-icon">delete</span>
+      <h3 class="modal-title" id="delete-key-title">Delete this key?</h3>
+      <div class="modal-key"><span class="key-fingerprint" id="delete-key-fingerprint"></span></div>
+      <p class="modal-note">Any device that has allowed this key will ask you to allow this computer again the next time you connect. The key can't be recovered afterwards unless you have a copy of it.</p>
+      <div class="modal-actions">
+        <button class="text-btn" id="delete-key-cancel">Cancel</button>
+        <button class="text-btn primary" id="delete-key-confirm">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <a href="#">Documentation</a>
+    <a href="#">Source code</a>
+    <a href="#">Supported devices</a>
+    <a href="#">Report an issue</a>
+  </footer>
+
+  <script type="module" src="app.js?v=2"></script>
+  <script type="module" src="settings.js?v=2"></script>
+</body>
+</html>

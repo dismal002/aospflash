@@ -1,0 +1,130 @@
+{
+  "compatibleBuilds": [
+    {
+      "product": "tangorpro",
+      "arch": "arm64",
+      "buildId": "9723176",
+      "isGSI": false,
+      "releaseCandidateName": "TD2A.230203.028",
+      "licenseText": [
+        "Sample License"
+      ],
+      "factoryImageDownloadUrl": "https://dl.google.com/dl/android/aosp/tangorpro-td2a.230203.028-factory-55b7fab7.zip",
+      "target": "tangorpro-user",
+      "version": "13.0.0",
+      "versionName": "Android 13",
+      "apiLevel": 33,
+      "releaseBuildMetadata": {
+        "notes": "Official factory image for Pixel Tablet (tangorpro)",
+        "latest": true
+      }
+    },
+    {
+      "product": "tangorpro",
+      "arch": "arm64",
+      "buildId": "9543210",
+      "isGSI": false,
+      "releaseCandidateName": "TD1A.230105.002",
+      "licenseText": [
+        "Sample License"
+      ],
+      "factoryImageDownloadUrl": "https://dl.google.com/dl/android/aosp/tangorpro-td1a.230105.002-factory-12345678.zip",
+      "target": "tangorpro-user",
+      "version": "13.0.0",
+      "versionName": "Android 13 QPR1",
+      "apiLevel": 33,
+      "releaseBuildMetadata": {
+        "notes": "Previous stable build for tangorpro",
+        "latest": false
+      }
+    },
+    {
+      "product": "aosp_arm64_pubsign",
+      "arch": "arm64",
+      "buildId": "10454027",
+      "isGSI": true,
+      "releaseCandidateName": "TQ3A.230805.001.A3",
+      "licenseText": [
+        "Sample License"
+      ],
+      "factoryImageDownloadUrl": "https://dl.google.com/developers/android/tm/images/gsi/aosp_arm64-exp-TQ3A.230805.001.A3-10454027-66e107ed.zip",
+      "target": "aosp_arm64_pubsign-user",
+      "version": "13.0.0",
+      "versionName": "Android 13 QPR3 ARM64 GSI",
+      "apiLevel": 33,
+      "previewMetadata": {
+        "id": "tm-qpr3-gsi",
+        "releaseTrackName": "Android 13 QPR3",
+        "releaseTrackVersionName": "ARM64 GSI",
+        "active": true,
+        "canary": false
+      },
+      "gsiMetadata": {}
+    },
+    {
+      "product": "aosp_arm64_pubsign",
+      "arch": "arm64",
+      "buildId": "11002233",
+      "isGSI": true,
+      "releaseCandidateName": "UP1A.231005.007",
+      "licenseText": [
+        "Sample License"
+      ],
+      "factoryImageDownloadUrl": "https://dl.google.com/developers/android/udc/images/gsi/aosp_arm64-exp-UP1A.231005.007.zip",
+      "target": "aosp_arm64_pubsign-user",
+      "version": "14.0.0",
+      "versionName": "Android 14 ARM64 GSI",
+      "apiLevel": 34,
+      "previewMetadata": {
+        "id": "udc-gsi",
+        "releaseTrackName": "Android 14",
+        "releaseTrackVersionName": "ARM64 GSI",
+        "active": true,
+        "canary": false
+      },
+      "gsiMetadata": {}
+    },
+    {
+      "product": "aosp_x86_64_pubsign",
+      "arch": "x86_64",
+      "buildId": "10454028",
+      "isGSI": true,
+      "releaseCandidateName": "TQ3A.230805.001.B1",
+      "licenseText": [
+        "Sample License"
+      ],
+      "factoryImageDownloadUrl": "https://dl.google.com/developers/android/tm/images/gsi/aosp_x86_64-exp-TQ3A.230805.001.B1.zip",
+      "target": "aosp_x86_64_pubsign-user",
+      "version": "13.0.0",
+      "versionName": "Android 13 x86_64 GSI",
+      "apiLevel": 33,
+      "previewMetadata": {
+        "id": "tm-qpr3-x86_64-gsi",
+        "releaseTrackName": "Android 13 QPR3",
+        "releaseTrackVersionName": "x86_64 GSI",
+        "active": false,
+        "canary": false
+      },
+      "gsiMetadata": {}
+    },
+    {
+      "product": "cheetah",
+      "arch": "arm64",
+      "buildId": "1012345",
+      "isGSI": false,
+      "releaseCandidateName": "TQ3A.230901.001",
+      "licenseText": [
+        "Sample License"
+      ],
+      "factoryImageDownloadUrl": "https://dl.google.com/dl/android/aosp/cheetah-tq3a.230901.001-factory.zip",
+      "target": "cheetah-user",
+      "version": "13.0.0",
+      "versionName": "Android 13 (Pixel 7)",
+      "apiLevel": 33,
+      "releaseBuildMetadata": {
+        "notes": "Pixel 7 factory image",
+        "latest": true
+      }
+    }
+  ]
+}

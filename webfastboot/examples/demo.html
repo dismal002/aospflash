@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>WebUSB Fastboot Demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  button { padding: 0.5rem 1rem; margin-right: 0.5rem; }
+  #log { white-space: pre-wrap; background: #111; color: #0f0; padding: 1rem; height: 320px;
+         overflow-y: auto; font-family: ui-monospace, monospace; font-size: 13px; border-radius: 6px; }
+  #flashFile { margin-top: 1rem; }
+  .row { margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+  <h1>WebUSB Fastboot Demo</h1>
+  <p>Requires Chrome/Edge (or another WebUSB-capable browser) served over HTTPS or localhost,
+     and a device sitting in the fastboot bootloader with a USB debugging/data cable connected.</p>
+
+  <div class="row">
+    <button id="connect">Connect device</button>
+    <button id="getvarAll" disabled>getvar:all</button>
+    <button id="reboot" disabled>Reboot</button>
+    <button id="rebootBootloader" disabled>Reboot to bootloader</button>
+  </div>
+
+  <div class="row">
+    <button id="unlockAbility" disabled>Check unlock ability</button>
+    <button id="unlock" disabled style="background:#611;color:#fff;">Unlock bootloader (wipes data)</button>
+    <button id="lock" disabled>Lock bootloader</button>
+  </div>
+
+  <div class="row">
+    <label for="partition">Partition:</label>
+    <input id="partition" value="boot" />
+    <input type="file" id="flashFile" disabled />
+    <button id="flashButton" disabled>Flash selected file</button>
+  </div>
+
+  <div id="log"></div>
+
+  <script type="module">
+    import { connect } from '../src/index.js';
+
+    const logEl = document.getElementById('log');
+    const log = (msg) => {
+      logEl.textContent += `${msg}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    };
+
+    let driver = null;
+
+    document.getElementById('connect').addEventListener('click', async () => {
+      try {
+        driver = await connect({
+          prolog: (m) => log(`> ${m}`),
+          epilog: (err) => { if (err) log(`  ! ${err.message}`); },
+          info: (m) => log(`  (bootloader) ${m}`),
+          text: (m) => log(`  ${m}`),
+        });
+        log('Connected.');
+        for (const id of ['getvarAll', 'reboot', 'rebootBootloader', 'flashButton', 'unlockAbility', 'unlock', 'lock']) {
+          document.getElementById(id).disabled = false;
+        }
+        document.getElementById('flashFile').disabled = false;
+      } catch (e) {
+        log(`Connection failed: ${e.message}`);
+      }
+    });
+
+    document.getElementById('getvarAll').addEventListener('click', async () => {
+      try {
+        const lines = await driver.getVarAll();
+        lines.forEach((l) => log(`  ${l}`));
+      } catch (e) {
+        log(`getvar:all failed: ${e.message}`);
+      }
+    });
+
+    document.getElementById('reboot').addEventListener('click', () => driver.reboot().catch((e) => log(e.message)));
+    document.getElementById('rebootBootloader').addEventListener('click', () =>
+      driver.rebootTo('bootloader').catch((e) => log(e.message)),
+    );
+
+    document.getElementById('unlockAbility').addEventListener('click', async () => {
+      try {
+        log(`Unlock ability: ${await driver.getUnlockAbility()}`);
+      } catch (e) {
+        log(`get_unlock_ability failed: ${e.message}`);
+      }
+    });
+
+    document.getElementById('unlock').addEventListener('click', async () => {
+      if (!confirm('This will WIPE ALL DATA on the connected device and may require you to ' +
+                   'confirm on the device screen. Continue?')) return;
+      log('Sending flashing unlock (device may be waiting for a button press)...');
+      try {
+        await driver.unlockBootloader();
+        log('Bootloader unlock accepted.');
+      } catch (e) {
+        log(`Unlock failed: ${e.message}`);
+      }
+    });
+
+    document.getElementById('lock').addEventListener('click', async () => {
+      if (!confirm('Re-lock the bootloader?')) return;
+      try {
+        await driver.lockBootloader();
+        log('Bootloader lock accepted.');
+      } catch (e) {
+        log(`Lock failed: ${e.message}`);
+      }
+    });
+
+    document.getElementById('flashButton').addEventListener('click', async () => {
+      const file = document.getElementById('flashFile').files[0];
+      const partition = document.getElementById('partition').value.trim();
+      if (!file || !partition) return;
+
+      const buffer = await file.arrayBuffer();
+      log(`Flashing ${file.name} (${buffer.byteLength} bytes) to '${partition}'...`);
+      try {
+        await driver.flashBlob(partition, buffer, (sent, total) => {
+          if (sent % (1024 * 1024) < 65536 || sent === total) {
+            log(`  ${Math.floor((sent / total) * 100)}% (${sent}/${total})`);
+          }
+        });
+        log('Flash complete.');
+      } catch (e) {
+        log(`Flash failed: ${e.message}`);
+      }
+    });
+  </script>
+</body>
+</html>

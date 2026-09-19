@@ -1,0 +1,15 @@
+{
+  "name": "webusb-fastboot",
+  "version": "0.1.0",
+  "description": "WebUSB fastboot protocol client, ported from AOSP's system/core/fastboot host driver",
+  "type": "module",
+  "main": "src/index.js",
+  "module": "src/index.js",
+  "license": "Apache-2.0",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
