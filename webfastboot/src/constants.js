@@ -92,14 +92,11 @@ export const FB_VAR_TREBLE_ENABLED = 'treble-enabled';
 export const FB_VAR_MAX_FETCH_SIZE = 'max-fetch-size';
 export const FB_VAR_DMESG = 'dmesg';
 
-// 32-bit unsigned max, matching FastBootDriver::MAX_DOWNLOAD_SIZE.
-export const MAX_DOWNLOAD_SIZE = 0xffffffff;
+export const DEFAULT_DOWNLOAD_SIZE = 64 * 1024 * 1024; // 64 MiB (safe limit for WebUSB & bootloader RAM)
+export const MAX_DOWNLOAD_SIZE = 64 * 1024 * 1024; // 64 MiB max per split
 
-// Matches FastBootDriver::RESP_TIMEOUT (seconds), used as the default
-// per-status-packet timeout. INFO/TEXT packets reset this timer, same
-// as the C++ driver, so long erase/flash operations don't spuriously
-// time out as long as the bootloader keeps sending progress.
-export const RESP_TIMEOUT_MS = 30000;
+// 10 minutes timeout for bootloader operations (eMMC flash writes can take >30s)
+export const RESP_TIMEOUT_MS = 600000;
 
 // Matches FastBootDriver::TRANSPORT_CHUNK_SIZE — the granularity the
 // C++ driver coalesces sparse-file writes into before handing them to

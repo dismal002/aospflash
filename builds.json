@@ -20,6 +20,44 @@
       }
     },
     {
+      "product": "volantis",
+      "arch": "arm64",
+      "buildId": "MMB29V",
+      "isGSI": false,
+      "releaseCandidateName": "MMB29V",
+      "licenseText": [
+        "Sample License"
+      ],
+      "factoryImageDownloadUrl": "https://dl.google.com/dl/android/aosp/volantis-mmb29v-factory-da6c22ad.zip",
+      "target": "volantis-user",
+      "version": "6.0.1",
+      "versionName": "Android 6.0.1 (Nexus 9 - volantis)",
+      "apiLevel": 23,
+      "releaseBuildMetadata": {
+        "notes": "Official factory image for Nexus 9 (volantis) - Android 6.0.1 (MMB29V)",
+        "latest": true
+      }
+    },
+    {
+      "product": "flounder",
+      "arch": "arm64",
+      "buildId": "MMB29V",
+      "isGSI": false,
+      "releaseCandidateName": "MMB29V",
+      "licenseText": [
+        "Sample License"
+      ],
+      "factoryImageDownloadUrl": "http://localhost:8080/builds/volantis-mmb29v-factory-da6c22ad.zip",
+      "target": "volantis-user",
+      "version": "6.0.1",
+      "versionName": "Android 6.0.1 (Nexus 9 - flounder)",
+      "apiLevel": 23,
+      "releaseBuildMetadata": {
+        "notes": "Official factory image for Nexus 9 (flounder) - Android 6.0.1 (MMB29V)",
+        "latest": true
+      }
+    },
+    {
       "product": "tangorpro",
       "arch": "arm64",
       "buildId": "9543210",
@@ -123,6 +161,25 @@
       "apiLevel": 33,
       "releaseBuildMetadata": {
         "notes": "Pixel 7 factory image",
+        "latest": true
+      }
+    },
+    {
+      "product": "dragon",
+      "arch": "arm64",
+      "buildId": "OPM8.190605.005",
+      "isGSI": false,
+      "releaseCandidateName": "OPM8.190605.005",
+      "licenseText": [
+        "Sample License"
+      ],
+      "factoryImageDownloadUrl": "https://dl.google.com/dl/android/aosp/ryu-opm8.190605.005-factory-25b457f3.zip",
+      "target": "ryu-user",
+      "version": "8.1.0",
+      "versionName": "Android 8.1.0 (Pixel C - ryu)",
+      "apiLevel": 27,
+      "releaseBuildMetadata": {
+        "notes": "Official factory image for Pixel C (ryu) - Android 8.1.0 (OPM8.190605.005)",
         "latest": true
       }
     }

@@ -1,6 +1,8 @@
 import { WebUsbTransport, FastbootDriver, flashAll, update, ZipImageSource, waitForReconnect, findFastbootInterface, FASTBOOT_USB_FILTERS, requestFastbootDevice } from './webfastboot/src/index.js';
 import { AdbWebUsbTransport, Adb, ADB_DEVICE_FILTERS, isAdbInterface } from './webadb/src/index.js';
 
+console.log('[Open Flash Tool v100 loaded]');
+
 let currentDriver = null;
 let currentConnectedDevice = null;
 let selectedBuild = null;
@@ -150,7 +152,12 @@ async function connectDevice() {
 
     let product = 'tangorpro';
     let serial = device.serialNumber || 'UNKNOWN_SERIAL';
-    try { product = (await adb.shell('getprop ro.product.device')).trim() || product; } catch (e) {}
+    try {
+      const devName = (await adb.shell('getprop ro.product.device')).trim();
+      const prodName = (await adb.shell('getprop ro.product.name')).trim();
+      const boardName = (await adb.shell('getprop ro.product.board')).trim();
+      product = devName || prodName || boardName || product;
+    } catch (e) {}
 
     currentConnectedDevice = {
       mode: 'adb',
@@ -207,7 +214,7 @@ function getConnectedRawDevice() {
       || currentConnectedDevice.adbInstance?.connection?.transport?.device
       || null;
   }
-  return currentDriver?.transport?.device || null;
+  return currentDriver?.device || currentDriver?.transport?.device || null;
 }
 
 function resetDisconnectUi() {
@@ -347,6 +354,8 @@ function selectBuild(build) {
   advancedOptions.hidden = false;
   advancedToggleIcon.textContent = 'expand_less';
 
+  updateSummaryTags();
+
   // Update Modal
   const modalRows = confirmModal.querySelectorAll('.modal-row');
   if (modalRows[0]) {
@@ -358,6 +367,43 @@ function selectBuild(build) {
     modalRows[1].querySelector('.modal-row-sub').textContent = `${build.target} | ${build.versionName || build.version} | API level ${build.apiLevel || 33}`;
   }
 }
+
+function updateSummaryTags() {
+  const containers = [
+    buildSummaryView.querySelector('.build-tags'),
+    confirmModal.querySelector('.build-tags')
+  ];
+
+  const optionsMap = [
+    { id: 'opt-wipe', label: 'Wipe' },
+    { id: 'opt-lock', label: 'Lock' },
+    { id: 'opt-force', label: 'Force flash' },
+    { id: 'opt-disable-verity', label: 'Disable verity' },
+    { id: 'opt-disable-verification', label: 'Disable verification' },
+    { id: 'opt-skip-secondary', label: 'Skip secondary' },
+  ];
+
+  containers.forEach(container => {
+    if (!container) return;
+    container.innerHTML = '';
+    optionsMap.forEach(opt => {
+      const el = document.getElementById(opt.id);
+      if (el && el.checked) {
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = opt.label;
+        container.appendChild(tag);
+      }
+    });
+  });
+}
+
+['opt-wipe', 'opt-lock', 'opt-force', 'opt-disable-verity', 'opt-disable-verification', 'opt-skip-secondary'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener('change', updateSummaryTags);
+  }
+});
 
 document.getElementById('edit-options-btn').addEventListener('click', () => {
   buildSummaryView.hidden = true;
@@ -379,6 +425,7 @@ document.getElementById('pick-different-build').addEventListener('click', (e) =>
 });
 
 document.getElementById('install-build-btn').addEventListener('click', () => {
+  updateSummaryTags();
   confirmModal.hidden = false;
 });
 
@@ -511,25 +558,19 @@ document.getElementById('confirm-install').addEventListener('click', async () =>
       throw new Error('No download URL for the selected build.');
     }
     updateProgress(2, `Downloading ${selectedBuild.releaseCandidateName}…`);
-    const response = await fetch(selectedBuild.factoryImageDownloadUrl);
+    let response;
+    try {
+      response = await fetch(`/api/download?url=${encodeURIComponent(selectedBuild.factoryImageDownloadUrl)}`);
+      if (!response.ok) throw new Error(`Proxy status ${response.status}`);
+    } catch (e) {
+      console.warn('Proxy download failed, falling back to direct download:', e);
+      response = await fetch(selectedBuild.factoryImageDownloadUrl);
+    }
     if (!response.ok) {
       throw new Error(`Failed to download factory image: HTTP ${response.status}`);
     }
-    const totalBytes = Number(response.headers.get('content-length')) || 0;
-    const reader = response.body.getReader();
-    const chunks = [];
-    let received = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-      const mb = (received / (1024 * 1024)).toFixed(1);
-      const pct = totalBytes ? ` (${Math.floor((received / totalBytes) * 100)}%)` : '';
-      updateProgress(2, `Downloading factory image: ${mb} MB${pct}…`);
-    }
-    const zipBlob = new Blob(chunks);
-    updateProgress(2, `Downloaded ${(received / (1024 * 1024)).toFixed(1)} MB`);
+    const zipBlob = await response.blob();
+    updateProgress(2, `Downloaded ${(zipBlob.size / (1024 * 1024)).toFixed(1)} MB`);
 
     // Flash options, as set in the "Selected build" editor (pencil icon).
     // Disable Verity / Disable Verification aren't wired into flashAll()
@@ -552,23 +593,30 @@ document.getElementById('confirm-install').addEventListener('click', async () =>
       }
     }
 
-    // Step 3: real flashing. update()/flashAll() do the actual USB work
-    // (requirement checks, per-partition download+flash, super-partition
-    // sync) and report real status/byte progress as they go — nothing
-    // here is timed or simulated.
+    // Step 3: real flashing via webfastboot update()
     await update(currentDriver, zipBlob, {
       reboot: false, // we report the reboot ourselves in step 4
       wantsWipe,
       force,
       skipSecondary,
-      liblpModule,
+      disableSuperOptimization: true, // Use memory-safe streaming per-partition flashing to prevent 5GB V8 Heap OOM tab crash
+      liblpModule: null,
       onStatus: (msg) => updateProgress(3, msg),
       onProgress: (partition, sent, total) => {
         const pct = total ? Math.floor((sent / total) * 100) : 0;
         updateProgress(3, `Flashing '${partition}': ${pct}%`);
       },
+      // Called just before the device reboots to fastbootd (for super/dynamic
+      // partition flashing). Setting isExpectingReboot suppresses the global
+      // USB disconnect listener so it doesn't treat this controlled reboot
+      // as a fatal "Device disconnected unexpectedly" error.
+      onReboot: () => {
+        console.log('[App] Device rebooting to fastbootd (expected); suppressing disconnect listener');
+        isExpectingReboot = true;
+      },
     });
-    updateProgress(3, 'All build partitions flashed successfully');
+    // Reboot is now complete (waitForReconnect returned); safe to clear the flag.
+    isExpectingReboot = false;
 
     // Re-lock the bootloader if requested, before the final reboot.
     if (lockAfterFlash) {

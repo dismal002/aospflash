@@ -70,6 +70,9 @@ export function findFastbootInterface(device) {
               alternateSetting: alt.alternateSetting,
               inEndpoint: inEp.endpointNumber,
               outEndpoint: outEp.endpointNumber,
+              // wMaxPacketSize of the bulk-out endpoint: 64 (FS) or 512 (HS/SS).
+              // Used to determine whether a ZLP is needed after a payload transfer.
+              outPacketSize: outEp.packetSize || 512,
             };
           }
         }
@@ -85,6 +88,9 @@ export class WebUsbTransport {
     this.device = device;
     this._iface = null;
     this._claimed = false;
+    // wMaxPacketSize of the bulk-out endpoint, set during open().
+    // 64 = USB Full Speed ("Connected (slow)"), 512 = USB High Speed.
+    this._outPacketSize = 512;
   }
 
   /**
@@ -98,6 +104,8 @@ export class WebUsbTransport {
       throw new UsbError('No fastboot (class 0xFF/0x42/0x03) interface found on this device');
     }
     this._iface = info;
+    this._outPacketSize = info.outPacketSize || 512;
+    console.log(`[USB] bulk-out wMaxPacketSize: ${this._outPacketSize}`);
 
     if (!this.device.opened) {
       await this.device.open();
@@ -173,16 +181,43 @@ export class WebUsbTransport {
    * @param {number} chunkSize
    * @param {(sent: number, total: number) => void} [onProgress]
    */
+  /**
+   * Sends a USB Zero-Length Packet on the bulk-out endpoint to terminate
+   * a transfer whose byte count is an exact multiple of wMaxPacketSize.
+   * Mirrors usb.cpp's UsbTransport::Write() ZLP logic.
+   * @private
+   */
   async writeChunked(data, chunkSize, onProgress) {
-    const view =
-      data instanceof Uint8Array ? data : new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength);
-    const total = view.byteLength;
+    // Pre-buffer small Blobs (<= 32 MB) into contiguous memory to avoid
+    // per-chunk async Blob.slice() overhead on fast images like boot/recovery.
+    if (data instanceof Blob && data.size <= 32 * 1024 * 1024) {
+      data = new Uint8Array(await data.arrayBuffer());
+    }
+    const isBlob = data instanceof Blob;
+    const view = isBlob
+      ? null
+      : data instanceof Uint8Array
+        ? data
+        : new Uint8Array(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength);
+    const total = isBlob ? data.size : view.byteLength;
     let sent = 0;
-    while (sent < total) {
-      const end = Math.min(sent + chunkSize, total);
-      await this.write(view.subarray(sent, end));
-      sent = end;
-      if (onProgress) onProgress(sent, total);
+    let lastProgressAt = performance.now();
+    // DEBUG watchdog: warns if no chunk completes for 10s.
+    const wd = setInterval(() => {
+      const idle = ((performance.now() - lastProgressAt) / 1000).toFixed(0);
+      console.warn(`[USB] no chunk completed for ${idle}s; sent=${sent}/${total} (${((sent / total) * 100).toFixed(1)}%)`);
+    }, 10000);
+    try {
+      while (sent < total) {
+        const end = Math.min(sent + chunkSize, total);
+        const buf = isBlob ? await data.slice(sent, end).arrayBuffer() : view.subarray(sent, end);
+        await this.write(buf);
+        sent = end;
+        lastProgressAt = performance.now();
+        if (onProgress) onProgress(sent, total);
+      }
+    } finally {
+      clearInterval(wd);
     }
   }
 
@@ -295,14 +330,18 @@ export async function waitForReconnect(oldDevice, opts = {}) {
 }
 
 function findMatchingDevice(oldDevice, devices) {
+  if (!devices || devices.length === 0) return null;
   if (oldDevice.serialNumber) {
-    const bySerial = devices.find((d) => d.serialNumber === oldDevice.serialNumber);
+    const bySerial = devices.find((d) => d.serialNumber && d.serialNumber === oldDevice.serialNumber);
     if (bySerial) return bySerial;
   }
-  return (
-    devices.find((d) => d.vendorId === oldDevice.vendorId && d.productId === oldDevice.productId) ??
-    null
-  );
+  const byExactProduct = devices.find((d) => d.vendorId === oldDevice.vendorId && d.productId === oldDevice.productId);
+  if (byExactProduct) return byExactProduct;
+
+  const byVendor = devices.find((d) => d.vendorId === oldDevice.vendorId);
+  if (byVendor) return byVendor;
+
+  return devices[0];
 }
 
 function sleep(ms) {

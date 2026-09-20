@@ -101,10 +101,26 @@ export class ZipImageSource {
    * @param {string} name
    * @returns {Promise<Uint8Array|null>} null if the archive has no such entry.
    */
-  async getFile(name) {
-    const entry = this._entries.get(name);
+  /**
+   * @param {string} name
+   * @param {(loaded: number, total: number) => void} [onProgress]
+   * @returns {Promise<Uint8Array|Blob|null>} null if the archive has no such entry.
+   */
+  async getFile(name, onProgress) {
+    let entry = this._entries.get(name);
+    if (!entry) {
+      // Look for entries matching by basename (e.g. "volantis-mmb29v/image-volantis-mmb29v.zip" or "images/boot.img")
+      const lowerName = name.toLowerCase();
+      for (const [key, val] of this._entries.entries()) {
+        const base = key.split('/').pop();
+        if (key === name || base === name || key.toLowerCase() === lowerName || base.toLowerCase() === lowerName) {
+          entry = val;
+          break;
+        }
+      }
+    }
     if (!entry) return null;
-    return extractEntry(this._source, entry);
+    return extractEntry(this._source, entry, onProgress);
   }
 
   /** @returns {string[]} Names of every entry in the archive. */
@@ -260,7 +276,7 @@ function parseZip64Extra(bytes, extraStart, extraLen, placeholders) {
 
 // ---- Entry extraction -------------------------------------------------
 
-async function extractEntry(source, entry) {
+async function extractEntry(source, entry, onProgress) {
   // The local file header duplicates (and can disagree slightly with,
   // e.g. via data-descriptor flags) the central directory's name/extra
   // lengths, so re-read it to find where this entry's actual payload
@@ -276,14 +292,24 @@ async function extractEntry(source, entry) {
   const extraLen = view.getUint16(28, true);
   const dataStart = entry.localHeaderOffset + 30 + nameLen + extraLen;
 
-  const compressed = await source.read(dataStart, entry.compressedSize);
-
   if (entry.method === 0) {
     // Stored (no compression).
-    return compressed;
+    if (source._blob) {
+      if (onProgress) onProgress(entry.uncompressedSize, entry.uncompressedSize);
+      return source._blob.slice(dataStart, dataStart + entry.uncompressedSize);
+    }
+    const compressed = await source.read(dataStart, entry.compressedSize);
+    if (onProgress) onProgress(entry.uncompressedSize, entry.uncompressedSize);
+    return new Blob([compressed]);
   }
   if (entry.method === 8) {
-    return inflateRaw(compressed, entry.uncompressedSize);
+    let compressed;
+    if (source._blob) {
+      compressed = source._blob.slice(dataStart, dataStart + entry.compressedSize);
+    } else {
+      compressed = await source.read(dataStart, entry.compressedSize);
+    }
+    return inflateRawToBlob(compressed, entry.uncompressedSize, onProgress);
   }
   throw new ProtocolError(
     `Unsupported zip compression method ${entry.method} (only stored/deflate are supported)`,
@@ -291,27 +317,48 @@ async function extractEntry(source, entry) {
 }
 
 /**
- * Decompresses a raw DEFLATE stream using the platform's built-in
- * DecompressionStream, so this file has no bundled inflate
- * implementation and no external dependency.
+ * Decompresses a raw DEFLATE stream into an off-heap Blob using the platform's
+ * built-in DecompressionStream.
  *
- * @param {Uint8Array} compressed
+ * @param {Blob|Uint8Array} compressed
  * @param {number} expectedSize
- * @returns {Promise<Uint8Array>}
+ * @param {(loaded: number, total: number) => void} [onProgress]
+ * @returns {Promise<Blob>}
  */
-async function inflateRaw(compressed, expectedSize) {
+async function inflateRawToBlob(compressed, expectedSize, onProgress) {
   if (typeof DecompressionStream === 'undefined') {
     throw new ProtocolError(
       'This browser has no DecompressionStream support, required to read compressed zip entries',
     );
   }
   const ds = new DecompressionStream('deflate-raw');
-  const stream = new Blob([compressed]).stream().pipeThrough(ds);
-  const out = new Uint8Array(await new Response(stream).arrayBuffer());
-  if (out.byteLength !== expectedSize) {
-    throw new ProtocolError(
-      `Decompressed size mismatch: expected ${expectedSize}, got ${out.byteLength}`,
-    );
+  let rawStream;
+  if (compressed instanceof Blob) {
+    rawStream = compressed.stream().pipeThrough(ds);
+  } else {
+    const bufferSlice = compressed.buffer.slice(compressed.byteOffset, compressed.byteOffset + compressed.byteLength);
+    rawStream = new Response(bufferSlice).body.pipeThrough(ds);
   }
-  return out;
+
+  let totalBytes = 0;
+  let lastReport = 0;
+  const progressTransform = new TransformStream({
+    transform(chunk, controller) {
+      totalBytes += chunk.byteLength;
+      if (onProgress && expectedSize && totalBytes - lastReport > 2 * 1024 * 1024) {
+        lastReport = totalBytes;
+        onProgress(totalBytes, expectedSize);
+      }
+      controller.enqueue(chunk);
+    },
+    flush() {
+      if (onProgress && expectedSize) {
+        onProgress(totalBytes, expectedSize);
+      }
+    },
+  });
+
+  const stream = rawStream.pipeThrough(progressTransform);
+  return new Response(stream).blob();
 }
+

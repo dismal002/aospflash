@@ -23,7 +23,7 @@
 
 set -euo pipefail
 
-LIBLP_DIR="${LIBLP_DIR:-./liblp}"
+LIBLP_DIR="${LIBLP_DIR:-.}"
 LIBBASE_DIR="${LIBBASE_DIR:-./libbase}"
 OUT_DIR="${OUT_DIR:-./out}"
 mkdir -p "$OUT_DIR"
@@ -35,11 +35,12 @@ mkdir -p "$OUT_DIR"
 #                              call into it for the in-memory blob flow used here)
 #   - partition_opener.cpp   (real block-device opening; unused in-browser)
 LIBLP_SRCS=(
-  "$LIBLP_DIR/builder.cpp"
-  "$LIBLP_DIR/super_layout_builder.cpp"
-  "$LIBLP_DIR/reader.cpp"
-  "$LIBLP_DIR/writer.cpp"
-  "$LIBLP_DIR/utility.cpp"
+  "$LIBLP_DIR/liblp/builder.cpp"
+  "$LIBLP_DIR/liblp/super_layout_builder.cpp"
+  "$LIBLP_DIR/liblp/reader.cpp"
+  "$LIBLP_DIR/liblp/writer.cpp"
+  "$LIBLP_DIR/liblp/utility.cpp"
+  "$LIBLP_DIR/liblp/images.cpp"
 )
 
 # Minimal libbase pieces liblp actually touches (file I/O helpers, string
@@ -57,13 +58,15 @@ WRAPPER_SRCS=(
   wrapper/wasm_property_fetcher.cpp
 )
 
-emcc \
-  -std=c++17 \
+em++ \
+  -std=c++20 \
   -O2 \
   -fno-exceptions \
   -D_FILE_OFFSET_BITS=64 \
-  -I "$LIBLP_DIR/include" \
-  -I "$LIBLP_DIR" \
+  -D__HOST__=1 \
+  -I "$LIBLP_DIR/liblp/include" \
+  -I "$LIBLP_DIR/liblp" \
+  -I "$LIBLP_DIR/libsparse/include" \
   -I "$LIBBASE_DIR/include" \
   -I compat \
   "${LIBLP_SRCS[@]}" \

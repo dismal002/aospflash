@@ -94,9 +94,11 @@ func main() {
 			gsi := isGSIValue(b.IsGSI)
 
 			// Match rule:
-			// 1) Product matches requested board (e.g. "tangorpro")
-			// 2) OR it is a GSI (isGSI is true) AND its target/arch matches the requested device arch (e.g. "arm64")
-			matchProduct := board != "" && strings.EqualFold(b.Product, board)
+			// 1) Product matches requested board (or product alias like flounder -> volantis)
+			// 2) OR it is a GSI (isGSI is true) AND its target/arch matches the requested device arch
+			matchProduct := board != "" && (strings.EqualFold(b.Product, board) || 
+				(strings.EqualFold(board, "flounder") && strings.EqualFold(b.Product, "volantis")) ||
+				(strings.EqualFold(board, "volantis") && strings.EqualFold(b.Product, "flounder")))
 			
 			// Check architecture match for GSIs
 			bArch := b.Arch
@@ -126,6 +128,38 @@ func main() {
 		}
 
 		json.NewEncoder(w).Encode(resp)
+	})
+
+	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
+		targetURL := r.URL.Query().Get("url")
+		if targetURL == "" {
+			http.Error(w, `{"error": "Missing url parameter"}`, http.StatusBadRequest)
+			return
+		}
+
+		resp, err := http.Get(targetURL)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "Failed to fetch image: %v"}`, err), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if cl := resp.Header.Get("Content-Length"); cl != "" {
+			w.Header().Set("Content-Length", cl)
+		}
+		w.Header().Set("Content-Type", "application/zip")
+
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				w.Write(buf[:n])
+			}
+			if err != nil {
+				break;
+			}
+		}
 	})
 
 	// Serve static files from working directory

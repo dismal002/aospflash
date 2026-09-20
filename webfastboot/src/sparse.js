@@ -62,12 +62,259 @@ export const DEFAULT_BLOCK_SIZE = 4096;
 /** @typedef {{type: number, blocks: number, data?: Uint8Array, fill?: number}} SparseChunk */
 
 /**
- * Returns true if `buffer` begins with a valid sparse header.
- * @param {ArrayBuffer|Uint8Array} buffer
+ * Returns true if `buffer` (or Blob) begins with a valid sparse header.
+ * @param {ArrayBuffer|Uint8Array|Blob} buffer
  */
-export function isSparse(buffer) {
+export async function isSparse(buffer) {
+  if (buffer instanceof Blob) {
+    const slice = await buffer.slice(0, 4).arrayBuffer();
+    const view = new DataView(slice);
+    return view.byteLength >= 4 && view.getUint32(0, true) === SPARSE_HEADER_MAGIC;
+  }
   const view = toDataView(buffer);
   return view.byteLength >= 4 && view.getUint32(0, true) === SPARSE_HEADER_MAGIC;
+}
+
+const RAW_CHUNK_SIZE = 64 * 1024 * 1024;
+
+/**
+ * Creates a sparse image Blob from a raw image Blob.
+ * @param {Blob} blob
+ * @returns {Promise<Blob>}
+ */
+export async function fromRaw(blob) {
+  const blockSize = DEFAULT_BLOCK_SIZE;
+  const blocks = Math.ceil(blob.size / blockSize);
+  const chunks = [];
+  let remaining = blob;
+  while (remaining.size > 0) {
+    const chunkSize = Math.min(remaining.size, RAW_CHUNK_SIZE);
+    chunks.push({
+      type: ChunkType.RAW,
+      blocks: Math.ceil(chunkSize / blockSize),
+      data: remaining.slice(0, chunkSize),
+    });
+    remaining = remaining.slice(chunkSize);
+  }
+  return createImageBlob({ blockSize, totalBlocks: blocks }, chunks);
+}
+
+function createImageBlob(header, chunks) {
+  const parts = [];
+  const hdrBuf = new ArrayBuffer(SPARSE_HEADER_SIZE);
+  const hdrView = new DataView(hdrBuf);
+  hdrView.setUint32(0, SPARSE_HEADER_MAGIC, true);
+  hdrView.setUint16(4, 1, true); // major_version
+  hdrView.setUint16(6, 0, true); // minor_version
+  hdrView.setUint16(8, SPARSE_HEADER_SIZE, true);
+  hdrView.setUint16(10, CHUNK_HEADER_SIZE, true);
+  hdrView.setUint32(12, header.blockSize, true);
+  hdrView.setUint32(16, header.totalBlocks, true);
+  hdrView.setUint32(20, chunks.length, true);
+  hdrView.setUint32(24, 0, true);
+  parts.push(hdrBuf);
+
+  for (const chunk of chunks) {
+    const chkBuf = new ArrayBuffer(CHUNK_HEADER_SIZE);
+    const chkView = new DataView(chkBuf);
+    chkView.setUint16(0, chunk.type, true);
+    chkView.setUint16(2, 0, true);
+    chkView.setUint32(4, chunk.blocks, true);
+
+    if (chunk.type === ChunkType.RAW) {
+      const dataSize = chunk.data instanceof Blob ? chunk.data.size : chunk.data.byteLength;
+      chkView.setUint32(8, CHUNK_HEADER_SIZE + dataSize, true);
+      parts.push(chkBuf);
+      if (chunk.data) parts.push(chunk.data);
+    } else if (chunk.type === ChunkType.FILL) {
+      chkView.setUint32(8, CHUNK_HEADER_SIZE + 4, true);
+      const fillBuf = new ArrayBuffer(4);
+      new DataView(fillBuf).setUint32(0, chunk.fill, true);
+      parts.push(chkBuf);
+      parts.push(fillBuf);
+    } else {
+      chkView.setUint32(8, CHUNK_HEADER_SIZE, true);
+      parts.push(chkBuf);
+    }
+  }
+
+  return new Blob(parts);
+}
+
+/**
+ * Splits a sparse image Blob into smaller sparse Blobs within splitSize limit.
+ * Ported 1:1 from fastboot.js-master to guarantee valid AOSP sparse headers.
+ *
+ * @param {Blob} blob
+ * @param {number} splitSize
+ * @returns {AsyncGenerator<Blob>}
+ */
+export async function* splitBlob(blob, splitSize) {
+  // 7/8 is a safe value for split size to account for header overhead,
+  // matching AOSP host fastboot (libsparse) and fastboot.js-master
+  const safeSendValue = Math.floor(splitSize * (7 / 8));
+
+  // Short-circuit if splitting isn't required
+  if (blob.size <= splitSize) {
+    yield blob;
+    return;
+  }
+
+  const hdrBuf = await blob.slice(0, SPARSE_HEADER_SIZE).arrayBuffer();
+  if (!(await isSparse(hdrBuf))) {
+    throw new ProtocolError('Blob is not a valid Android sparse image');
+  }
+
+  const hdrView = new DataView(hdrBuf);
+  const blockSize = hdrView.getUint32(12, true);
+  const totalBlocks = hdrView.getUint32(16, true);
+  const totalChunks = hdrView.getUint32(20, true);
+
+  const header = {
+    blockSize,
+    totalBlocks,
+    chunks: totalChunks,
+  };
+
+  let restBlob = blob.slice(SPARSE_HEADER_SIZE);
+  let splitChunks = [];
+
+  function calcChunksSize(chunksList) {
+    let sz = SPARSE_HEADER_SIZE;
+    for (const c of chunksList) {
+      sz += CHUNK_HEADER_SIZE;
+      if (c.type === ChunkType.RAW) {
+        sz += c.data instanceof Blob ? c.data.size : (c.data ? c.data.byteLength : 0);
+      } else if (c.type === ChunkType.FILL) {
+        sz += 4;
+      }
+    }
+    return sz;
+  }
+
+  function calcChunksBlockSize(chunksList) {
+    return chunksList.reduce((acc, c) => acc + c.blocks, 0);
+  }
+
+  for (let i = 0; i < totalChunks; i++) {
+    const chkHeaderBuf = await restBlob.slice(0, CHUNK_HEADER_SIZE).arrayBuffer();
+    const chkView = new DataView(chkHeaderBuf);
+    const type = chkView.getUint16(0, true);
+    const blocks = chkView.getUint32(4, true);
+    const totalSz = chkView.getUint32(8, true);
+    const dataBytes = totalSz - CHUNK_HEADER_SIZE;
+
+    const chunkData = restBlob.slice(CHUNK_HEADER_SIZE, CHUNK_HEADER_SIZE + dataBytes);
+    restBlob = restBlob.slice(CHUNK_HEADER_SIZE + dataBytes);
+
+    const originalChunk = { type, blocks, dataBytes, data: chunkData };
+    const chunksToProcess = [];
+
+    if (type === ChunkType.RAW && dataBytes > safeSendValue) {
+      let origBytes = dataBytes;
+      let origData = chunkData;
+      while (origBytes > 0) {
+        let toSend = Math.min(safeSendValue, origBytes);
+        if (toSend < origBytes && toSend % blockSize !== 0) {
+          toSend = Math.floor(toSend / blockSize) * blockSize;
+        }
+        if (toSend <= 0) toSend = origBytes;
+
+        chunksToProcess.push({
+          type: ChunkType.RAW,
+          blocks: Math.floor(toSend / blockSize),
+          dataBytes: toSend,
+          data: origData.slice(0, toSend),
+        });
+        origData = origData.slice(toSend);
+        origBytes -= toSend;
+      }
+    } else {
+      chunksToProcess.push(originalChunk);
+    }
+
+    for (const chunk of chunksToProcess) {
+      const bytesRemaining = splitSize - calcChunksSize(splitChunks);
+      if (bytesRemaining >= chunk.dataBytes + CHUNK_HEADER_SIZE) {
+        splitChunks.push(chunk);
+      } else {
+        const splitBlocks = calcChunksBlockSize(splitChunks);
+        if (totalBlocks > splitBlocks) {
+          splitChunks.push({
+            type: ChunkType.DONT_CARE,
+            blocks: totalBlocks - splitBlocks,
+            dataBytes: 0,
+            data: null,
+          });
+        }
+        yield createImageBlob(header, splitChunks);
+
+        splitChunks = [
+          {
+            type: ChunkType.DONT_CARE,
+            blocks: splitBlocks,
+            dataBytes: 0,
+            data: null,
+          },
+          chunk,
+        ];
+      }
+    }
+  }
+
+  if (
+    splitChunks.length > 0 &&
+    (splitChunks.length > 1 || splitChunks[0].type !== ChunkType.DONT_CARE)
+  ) {
+    const splitBlocks = calcChunksBlockSize(splitChunks);
+    if (totalBlocks > splitBlocks) {
+      splitChunks.push({
+        type: ChunkType.DONT_CARE,
+        blocks: totalBlocks - splitBlocks,
+        dataBytes: 0,
+        data: null,
+      });
+    }
+    yield createImageBlob(header, splitChunks);
+  }
+}
+
+/**
+ * High-level helper: given a raw or already-sparse image and the
+ * device's max-download-size (from `getvar:max-download-size`),
+ * returns an array of one or more sparse image buffers ready to
+ * download+flash in sequence. Returns a single-element array
+ * containing the original bytes untouched if no splitting is needed.
+ *
+ * @param {ArrayBuffer|Uint8Array|Blob} buffer
+ * @param {number} maxDownloadSize 0/undefined means "no limit reported".
+ * @param {number} [blockSize]
+ * @returns {Promise<Array<ArrayBuffer|Uint8Array|Blob>>}
+ */
+export async function prepareForFlashing(buffer, maxDownloadSize, blockSize = DEFAULT_BLOCK_SIZE) {
+  if (buffer instanceof Blob) {
+    if (!maxDownloadSize || buffer.size <= maxDownloadSize) {
+      return [buffer];
+    }
+    let blob = buffer;
+    if (!(await isSparse(blob))) {
+      blob = await fromRaw(blob);
+    }
+    const splits = [];
+    for await (const split of splitBlob(blob, maxDownloadSize)) {
+      splits.push(split);
+    }
+    return splits;
+  }
+
+  const bytes = toUint8Array(buffer);
+
+  if (!maxDownloadSize || bytes.byteLength <= maxDownloadSize) {
+    return [bytes];
+  }
+
+  const image = (await isSparse(bytes)) ? parseSparse(bytes) : rawToChunks(bytes, blockSize);
+  return resparse(image, maxDownloadSize);
 }
 
 /**
@@ -358,28 +605,6 @@ export function resparse(image, maxSize) {
     ];
   }
   return outputs;
-}
-
-/**
- * High-level helper: given a raw or already-sparse image and the
- * device's max-download-size (from `getvar:max-download-size`),
- * returns an array of one or more sparse image buffers ready to
- * download+flash in sequence. Returns a single-element array
- * containing the original bytes untouched if no splitting is needed.
- *
- * @param {ArrayBuffer|Uint8Array} buffer
- * @param {number} maxDownloadSize 0/undefined means "no limit reported".
- * @param {number} [blockSize]
- */
-export function prepareForFlashing(buffer, maxDownloadSize, blockSize = DEFAULT_BLOCK_SIZE) {
-  const bytes = toUint8Array(buffer);
-
-  if (!maxDownloadSize || bytes.byteLength <= maxDownloadSize) {
-    return [bytes];
-  }
-
-  const image = isSparse(bytes) ? parseSparse(bytes) : rawToChunks(bytes, blockSize);
-  return resparse(image, maxDownloadSize);
 }
 
 // --- internal helpers -----------------------------------------------------

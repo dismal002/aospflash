@@ -56,7 +56,9 @@ export class FastbootDriver {
     this.epilog = callbacks.epilog ?? (() => {});
     this.infoCallback = callbacks.info ?? (() => {});
     this.textCallback = callbacks.text ?? (() => {});
-    this.chunkSize = C.DEFAULT_USB_CHUNK_SIZE;
+    // DEBUG: override from the console, e.g. `FASTBOOT_DEBUG_CHUNK = 1024*1024`
+    // before starting a flash. Remove once the Pixel C stall is diagnosed.
+    this.chunkSize = globalThis.FASTBOOT_DEBUG_CHUNK || C.DEFAULT_USB_CHUNK_SIZE;
   }
 
   /**
@@ -243,26 +245,30 @@ export class FastbootDriver {
    * @param {string} [label] Used only for the prolog message.
    */
   async download(data, onProgress, label) {
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    if (bytes.byteLength === 0 || bytes.byteLength > C.MAX_DOWNLOAD_SIZE) {
+    const size = data instanceof Blob ? data.size : (data.byteLength ?? data.length);
+    if (size === 0 || size > C.MAX_DOWNLOAD_SIZE) {
       throw new ProtocolError('Buffer is too large or 0 bytes');
     }
 
     const message = label
-      ? `Sending '${label}' (${Math.floor(bytes.byteLength / 1024)} KB)`
-      : `Sending ${Math.floor(bytes.byteLength / 1024)} KB`;
+      ? `Sending '${label}' (${Math.floor(size / 1024)} KB)`
+      : `Sending ${Math.floor(size / 1024)} KB`;
     this.prolog(message);
     let result;
     try {
-      const cmd = `${C.FB_CMD_DOWNLOAD}:${bytes.byteLength.toString(16).padStart(8, '0')}`;
+      const cmd = `${C.FB_CMD_DOWNLOAD}:${size.toString(16).padStart(8, '0')}`;
       await this._writeCommand(cmd);
       const dlResp = await this._handleResponse();
       if (dlResp.status !== C.RESPONSE_DATA) {
         throw new ProtocolError(`Device did not accept download (got ${dlResp.status})`);
       }
 
-      await this.transport.writeChunked(bytes, this.chunkSize, onProgress);
+      console.log(`[Fastboot] download ${label ?? ''}: declared ${size} bytes, chunk ${this.chunkSize}`);
+      const t0 = performance.now();
+      await this.transport.writeChunked(data, this.chunkSize, onProgress);
+      console.log(`[Fastboot] download ${label ?? ''}: all ${size} bytes written in ${((performance.now() - t0) / 1000).toFixed(1)}s, waiting for OKAY`);
       result = await this._handleResponse();
+      console.log(`[Fastboot] download ${label ?? ''}: device replied ${result.status}`);
       if (result.status !== C.RESPONSE_OKAY) {
         throw new DeviceFailError(`download failed: ${result.response}`);
       }
@@ -283,35 +289,60 @@ export class FastbootDriver {
    * into libsparse before each Download()/Flash() pair.
    *
    * @param {string} partition
-   * @param {ArrayBuffer|Uint8Array} data
+   * @param {ArrayBuffer|Uint8Array|Blob} data
    * @param {(sent: number, total: number) => void} [onProgress]
    */
   async flashBlob(partition, data, onProgress) {
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const totalSize = data instanceof Blob ? data.size : (data.byteLength ?? data.length);
 
     let maxDownloadSize = 0;
     try {
       const raw = (await this.getVar(C.FB_VAR_MAX_DOWNLOAD_SIZE)).trim();
-      // Bootloaders report this as either a hex or decimal string depending
-      // on vendor; try hex first (the common case) and fall back to decimal.
       maxDownloadSize = parseInt(raw, 16) || parseInt(raw, 10) || 0;
     } catch {
-      // Some bootloaders don't report it; fall back to no splitting.
       maxDownloadSize = 0;
     }
 
-    const pieces = prepareForFlashing(bytes, maxDownloadSize);
+    console.log(`[Fastboot] device max-download-size: ${maxDownloadSize}`);
+    if (!maxDownloadSize || maxDownloadSize > C.MAX_DOWNLOAD_SIZE) {
+      maxDownloadSize = C.DEFAULT_DOWNLOAD_SIZE;
+    }
+    // DEBUG: e.g. `FASTBOOT_DEBUG_MAX_DOWNLOAD = 64*1024*1024` in the console.
+    if (globalThis.FASTBOOT_DEBUG_MAX_DOWNLOAD) {
+      maxDownloadSize = Math.min(maxDownloadSize, globalThis.FASTBOOT_DEBUG_MAX_DOWNLOAD);
+      console.warn(`[Fastboot] DEBUG: capping max download size to ${maxDownloadSize}`);
+    }
+
+    const pieces = await prepareForFlashing(data, maxDownloadSize);
     let sentTotal = 0;
+    let pieceIdx = 0;
     for (const piece of pieces) {
+      pieceIdx++;
+      const pieceSize = piece instanceof Blob ? piece.size : (piece.byteLength ?? piece.length);
+      const label = pieces.length > 1 ? `${partition} [${pieceIdx}/${pieces.length}]` : partition;
+      const xferText = pieces.length > 1
+        ? `${partition} [split ${pieceIdx}/${pieces.length}] — Transferring payload`
+        : `${partition} — Transferring payload`;
+
       await this.download(
         piece,
         (sent) => {
-          if (onProgress) onProgress(sentTotal + sent, bytes.byteLength);
+          if (onProgress) onProgress(sentTotal + sent, totalSize, xferText);
         },
-        partition,
+        label,
       );
-      sentTotal += piece.byteLength;
+
+      sentTotal += pieceSize;
+      const writeText = pieces.length > 1
+        ? `${partition} [split ${pieceIdx}/${pieces.length}] — Writing to device flash memory (please wait)`
+        : `${partition} — Writing to device flash memory (please wait)`;
+      if (onProgress) onProgress(sentTotal, totalSize, writeText);
+
+      console.log(`[Fastboot] Payload ${pieceIdx}/${pieces.length} transferred (${pieceSize} bytes). Flashing to '${partition}'...`);
+      // Yield to browser event loop so the DOM updates before blocking WebUSB flash command
+      await new Promise((r) => setTimeout(r, 60));
       await this.flash(partition);
+      console.log(`[Fastboot] Split ${pieceIdx}/${pieces.length} written to '${partition}' successfully.`);
     }
   }
 

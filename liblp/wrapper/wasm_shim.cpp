@@ -31,6 +31,8 @@
 #include <liblp/builder.h>
 #include <liblp/liblp.h>
 #include <liblp/super_layout_builder.h>
+#include "utility.h"
+#include "writer.h"
 
 using android::fs_mgr::LpMetadata;
 using android::fs_mgr::MetadataBuilder;

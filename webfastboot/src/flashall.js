@@ -75,7 +75,7 @@ export const ImageType = Object.freeze({
  */
 export const IMAGES = [
   { nickname: 'boot', imgName: 'boot.img', partName: 'boot', optional: false, type: ImageType.BOOT_CRITICAL },
-  { nickname: 'bootloader', imgName: 'bootloader.img', partName: 'bootloader', optional: true, type: ImageType.EXTRA },
+  { nickname: 'bootloader', imgName: 'bootloader.img', partName: 'bootloader', optional: true, type: ImageType.BOOT_CRITICAL },
   { nickname: 'init_boot', imgName: 'init_boot.img', partName: 'init_boot', optional: true, type: ImageType.BOOT_CRITICAL },
   { nickname: '', imgName: 'boot_other.img', partName: 'boot', optional: true, type: ImageType.NORMAL },
   { nickname: 'cache', imgName: 'cache.img', partName: 'cache', optional: true, type: ImageType.EXTRA },
@@ -85,7 +85,7 @@ export const IMAGES = [
   { nickname: 'odm_dlkm', imgName: 'odm_dlkm.img', partName: 'odm_dlkm', optional: true, type: ImageType.NORMAL },
   { nickname: 'product', imgName: 'product.img', partName: 'product', optional: true, type: ImageType.NORMAL },
   { nickname: 'pvmfw', imgName: 'pvmfw.img', partName: 'pvmfw', optional: true, type: ImageType.BOOT_CRITICAL },
-  { nickname: 'radio', imgName: 'radio.img', partName: 'radio', optional: true, type: ImageType.EXTRA },
+  { nickname: 'radio', imgName: 'radio.img', partName: 'radio', optional: true, type: ImageType.BOOT_CRITICAL },
   { nickname: 'recovery', imgName: 'recovery.img', partName: 'recovery', optional: true, type: ImageType.BOOT_CRITICAL },
   { nickname: 'super', imgName: 'super.img', partName: 'super', optional: true, type: ImageType.EXTRA },
   { nickname: 'system', imgName: 'system.img', partName: 'system', optional: false, type: ImageType.NORMAL },
@@ -220,13 +220,19 @@ export async function checkRequirements(driver, androidInfoText, opts = {}) {
       const partitionName = req.options[0];
       const hasSlot = await getVarSafe(driver, `has-slot:${partitionName}`);
       if (hasSlot !== 'yes' && hasSlot !== 'no') {
-        throw new ProtocolError(`device doesn't have required partition ${partitionName}!`);
+        if (!force) {
+          onStatus?.(`Warning: device does not have partition '${partitionName}'; skipping partition-exists check`);
+          continue;
+        }
       }
       const known = images.filter((img) => img.nickname === partitionName);
       if (known.length === 0) {
-        throw new ProtocolError(
-          `device requires partition ${partitionName} which is not known to this version of flashall`,
-        );
+        if (!force) {
+          throw new ProtocolError(
+            `device requires partition ${partitionName} which is not known to this version of flashall`,
+          );
+        }
+        continue;
       }
       known.forEach((img) => (img.optional = false));
       continue;
@@ -283,10 +289,23 @@ async function getOtherSlot(driver, currentSlot) {
 /** Equivalent to do_for_partition (single-slot resolution). */
 async function resolvePartitionName(driver, baseName, slot) {
   const tokens = baseName.split(':');
-  const hasSlot = (await getVarSafe(driver, `has-slot:${tokens[0]}`)) === 'yes';
+  let hasSlot = (await getVarSafe(driver, `has-slot:${tokens[0]}`)) === 'yes';
+  if (!hasSlot && (await supportsAB(driver))) {
+    let checkSlot = slot;
+    if (!checkSlot || checkSlot === 'all') {
+      checkSlot = await getCurrentSlot(driver);
+    }
+    if (checkSlot) {
+      const slottedName = `${tokens[0]}_${checkSlot}`;
+      const sizeStr = await getVarSafe(driver, `partition-size:${slottedName}`);
+      if (sizeStr && sizeStr !== '0' && sizeStr !== '0x0') {
+        hasSlot = true;
+      }
+    }
+  }
   if (!hasSlot) return baseName;
   let useSlot = slot;
-  if (!useSlot) {
+  if (!useSlot || useSlot === 'all') {
     useSlot = await getCurrentSlot(driver);
     if (!useSlot) throw new ProtocolError('Failed to identify current slot');
   }
@@ -302,7 +321,17 @@ async function resolvePartitionName(driver, baseName, slot) {
 async function resolvePartitionNames(driver, baseName, slot) {
   if (slot !== 'all') return [await resolvePartitionName(driver, baseName, slot)];
   const tokens = baseName.split(':');
-  const hasSlot = (await getVarSafe(driver, `has-slot:${tokens[0]}`)) === 'yes';
+  let hasSlot = (await getVarSafe(driver, `has-slot:${tokens[0]}`)) === 'yes';
+  if (!hasSlot && (await supportsAB(driver))) {
+    const cur = await getCurrentSlot(driver);
+    if (cur) {
+      const slottedName = `${tokens[0]}_${cur}`;
+      const sizeStr = await getVarSafe(driver, `partition-size:${slottedName}`);
+      if (sizeStr && sizeStr !== '0' && sizeStr !== '0x0') {
+        hasSlot = true;
+      }
+    }
+  }
   if (!hasSlot) return [baseName];
   const count = await getSlotCount(driver);
   const names = [];
@@ -317,18 +346,38 @@ async function isLogicalPartition(driver, partition) {
 }
 
 /** Unsparsed size, matching AOSP's fastboot_buffer.image_size. */
-function logicalImageSize(bytes) {
-  if (isSparse(bytes)) {
-    const { blockSize, totalBlocks } = parseSparse(bytes);
+async function logicalImageSize(bytes) {
+  if (await isSparse(bytes)) {
+    const headerBuf = bytes instanceof Blob ? await bytes.slice(0, 28).arrayBuffer() : bytes;
+    const { blockSize, totalBlocks } = parseSparse(headerBuf);
     return blockSize * totalBlocks;
   }
-  return bytes.byteLength;
+  return bytes instanceof Blob ? bytes.size : bytes.byteLength;
 }
 
 // ---- Core flashing steps -----------------------------------------------
 
+function isNoSuchPartitionError(err) {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  return (
+    msg.includes('no such file or directory') ||
+    msg.includes('no such partition') ||
+    msg.includes('partition does not exist') ||
+    msg.includes('unknown partition') ||
+    msg.includes('invalid partition') ||
+    msg.includes('partition error') ||
+    msg.includes('does not exist') ||
+    msg.includes('not found')
+  );
+}
+
 async function flashImageEntry(driver, source, entry, slot, ctx) {
-  const bytes = await source.getFile(entry.imgName);
+  ctx.onStatus?.(`Unpacking '${entry.imgName}'…`);
+  const bytes = await source.getFile(entry.imgName, (read, total) => {
+    const pct = total ? Math.floor((read / total) * 100) : 0;
+    ctx.onStatus?.(`Unpacking '${entry.imgName}': ${pct}%`);
+  });
   if (!bytes) {
     if (entry.optional) return;
     throw new ProtocolError(`could not load '${entry.imgName}': not found in image source`);
@@ -337,10 +386,21 @@ async function flashImageEntry(driver, source, entry, slot, ctx) {
   for (const partition of partitions) {
     ctx.onStatus?.(`Flashing '${partition}'`);
     if (await isLogicalPartition(driver, partition)) {
-      await driver.resizePartition(partition, String(logicalImageSize(bytes)));
+      const imgSize = await logicalImageSize(bytes);
+      await driver.resizePartition(partition, String(imgSize));
       ctx.dynamicPartitions.add(partition);
     }
-    await driver.flashBlob(partition, bytes, (sent, total) => ctx.onProgress?.(partition, sent, total));
+    try {
+      await driver.flashBlob(partition, bytes, (sent, total, label) => ctx.onProgress?.(label || partition, sent, total));
+    } catch (err) {
+      const isCore = entry.partName === 'boot' || entry.partName === 'system' || entry.partName === 'super';
+      if ((entry.optional || !isCore) && isNoSuchPartitionError(err)) {
+        console.warn(`[Fastboot] Optional/missing partition '${partition}' not present on device (${err.message}). Skipping.`);
+        ctx.onStatus?.(`Skipping optional partition '${partition}' (not present on device)`);
+        continue;
+      }
+      throw err;
+    }
   }
 }
 
@@ -356,12 +416,15 @@ async function flashImageList(driver, source, images, slot, ctx) {
  * driver's transport once the device reconnects. No-op if the device
  * already reports is-userspace=yes.
  * @param {import('./fastboot-driver.js').FastbootDriver} driver
- * @param {{onStatus?: (msg: string) => void}} [opts]
+ * @param {{onStatus?: (msg: string) => void, onReboot?: () => void}} [opts]
  */
 export async function rebootToUserspaceFastboot(driver, opts = {}) {
   if ((await getVarSafe(driver, C.FB_VAR_IS_USERSPACE)) === 'yes') return;
   const device = driver.transport.device;
   opts.onStatus?.('Rebooting into userspace fastboot (fastbootd)…');
+  // Signal the caller BEFORE the reboot so it can suppress its USB disconnect
+  // listener (app.js: isExpectingReboot = true) before the event fires.
+  opts.onReboot?.();
   await driver.rebootTo('fastboot');
   await driver.waitForDisconnect();
   const newTransport = await waitForReconnect(device);
@@ -375,8 +438,13 @@ export async function rebootToUserspaceFastboot(driver, opts = {}) {
 
 async function cancelSnapshotIfNeeded(driver) {
   const status = await getVarSafe(driver, C.FB_VAR_SNAPSHOT_UPDATE_STATUS);
-  if (status && status !== 'none') {
-    await driver.snapshotUpdate('cancel');
+  const statusLower = (status || '').toLowerCase();
+  if (status && statusLower !== 'none' && !statusLower.includes('unknown') && !statusLower.includes('fail')) {
+    try {
+      await driver.snapshotUpdate('cancel');
+    } catch (e) {
+      console.warn('snapshot-update cancel not supported or rejected:', e);
+    }
   }
 }
 
@@ -387,8 +455,11 @@ async function cancelSnapshotIfNeeded(driver) {
  * if needed.
  */
 async function updateSuper(driver, source, ctx, wantsWipe) {
-  const emptySuper = await source.getFile('super_empty.img');
+  let emptySuper = await source.getFile('super_empty.img');
   if (!emptySuper) return false;
+  if (emptySuper instanceof Blob) {
+    emptySuper = new Uint8Array(await emptySuper.arrayBuffer());
+  }
 
   await rebootToUserspaceFastboot(driver, ctx);
 
@@ -450,6 +521,7 @@ async function flashSuperOptimized(driver, source, ctx, images, slot, liblpModul
   if (!superEmpty) {
     return null; // Device doesn't use dynamic partitions at all.
   }
+  const superEmptyBytes = superEmpty instanceof Blob ? new Uint8Array(await superEmpty.arrayBuffer()) : superEmpty;
 
   const superName = (await getVarSafe(driver, C.FB_VAR_SUPER_PARTITION_NAME)) || 'super';
   const partitionSizeStr = await getVarSafe(driver, `${C.FB_VAR_PARTITION_SIZE}:${superName}`);
@@ -458,7 +530,7 @@ async function flashSuperOptimized(driver, source, ctx, images, slot, liblpModul
   }
 
   const helper = new SuperFlashHelper(source, liblpModule);
-  if (!helper.open(superEmpty)) {
+  if (!helper.open(superEmptyBytes)) {
     return null; // Not a candidate at all (e.g. retrofit metadata).
   }
 
@@ -691,10 +763,11 @@ export function parseFastbootInfo(text, opts = {}) {
  */
 async function runFlashInfoTask(driver, source, task, ctx, slots) {
   const slot = task.slotOther ? slots.secondarySlot : slots.primarySlot;
+  const isCore = task.partition === 'boot' || task.partition === 'system' || task.partition === 'super';
   await flashImageEntry(
     driver,
     source,
-    { imgName: task.imgName, partName: task.partition, optional: false },
+    { imgName: task.imgName, partName: task.partition, optional: !isCore },
     slot,
     ctx,
   );
@@ -768,6 +841,14 @@ async function runFastbootInfoTasks(driver, source, tasks, ctx, slots, wantsWipe
 
 // ---- Public entry point --------------------------------------------------
 
+async function decodeText(bytesOrBlob) {
+  if (!bytesOrBlob) return '';
+  if (bytesOrBlob instanceof Blob) {
+    return await bytesOrBlob.text();
+  }
+  return new TextDecoder().decode(bytesOrBlob);
+}
+
 /**
  * Runs the full `fastboot flashall` flow against an already-connected
  * device: checks android-info.txt requirements, sets the active slot,
@@ -792,6 +873,8 @@ async function runFastbootInfoTasks(driver, source, tasks, ctx, slots, wantsWipe
  * @param {boolean} [options.reboot] Reboot the device once flashing finishes. Default true.
  * @param {(message: string) => void} [options.onStatus]
  * @param {(partition: string, sent: number, total: number) => void} [options.onProgress]
+ * @param {() => void} [options.onReboot] Called just before the device reboots to fastbootd
+ *   so the caller can suppress its own USB disconnect listener.
  */
 export async function flashAll(driver, source, options = {}) {
   const {
@@ -810,15 +893,16 @@ export async function flashAll(driver, source, options = {}) {
     reboot = true,
     onStatus,
     onProgress,
+    onReboot,
   } = options;
 
-  const ctx = { onStatus, onProgress, dynamicPartitions: new Set() };
+  const ctx = { onStatus, onProgress, onReboot, dynamicPartitions: new Set() };
 
   // 1. Check android-info.txt requirements (product/bootloader version/etc.).
   let images = IMAGES;
   const androidInfo = await source.getFile('android-info.txt');
   if (androidInfo) {
-    images = await checkRequirements(driver, new TextDecoder().decode(androidInfo), {
+    images = await checkRequirements(driver, await decodeText(androidInfo), {
       force,
       onStatus,
     });
@@ -866,7 +950,7 @@ export async function flashAll(driver, source, options = {}) {
   if (!disableFastbootInfo) {
     const infoBytes = await source.getFile('fastboot-info.txt');
     if (infoBytes) {
-      const infoTasks = parseFastbootInfo(new TextDecoder().decode(infoBytes), { wantsWipe });
+      const infoTasks = parseFastbootInfo(await decodeText(infoBytes), { wantsWipe });
       await runFastbootInfoTasks(
         driver,
         source,
@@ -925,16 +1009,8 @@ export async function flashAll(driver, source, options = {}) {
       await flashImageList(driver, source, secondaryNormal, secondarySlot, ctx);
     }
 
-    // 7. Reset dynamic-partition allocations now that everything's flashed.
-    //    Skipped for partitions the optimized path already sized exactly
-    //    right in one pass — only resize whatever went through the
-    //    unoptimized route (e.g. nothing, if optimization handled everything).
-    const toResize = optimizedPartitions
-      ? new Set([...ctx.dynamicPartitions].filter((p) => !optimizedPartitions.has(p)))
-      : ctx.dynamicPartitions;
-    if (updatedSuper && toResize.size > 0) {
-      await resizeDynamicPartitionsToZero(driver, { ...ctx, dynamicPartitions: toResize });
-    }
+    // 7. Dynamic partitions are already resized to their exact image sizes
+    // during flashImageEntry(). Do NOT resize to 0 after flashing.
   }
 
   // 7.5. `-w`: erase userdata/cache/metadata. Runs after flashing,
@@ -942,6 +1018,19 @@ export async function flashAll(driver, source, options = {}) {
   // before the final reboot — see the note on WIPE_PARTITIONS above).
   if (wantsWipe) {
     await wipeDataPartitions(driver, ctx);
+  }
+
+  // 7.6. Set active slot at the end of all flashing and wiping (matches fastboot.cpp fp->wants_set_active).
+  // This updates the Boot Control HAL metadata in NVRAM/GPT, marking the slot as active and bootable.
+  if (await supportsAB(driver)) {
+    const slotToActivate =
+      slotOverride && slotOverride !== 'all' ? slotOverride : currentSlot || 'a';
+    ctx.onStatus?.(`Setting active slot to '${slotToActivate}'`);
+    try {
+      await driver.setActive(slotToActivate);
+    } catch (e) {
+      ctx.onStatus?.(`Warning: failed to set active slot '${slotToActivate}': ${e.message || e}`);
+    }
   }
 
   // 8. Reboot.
@@ -968,7 +1057,53 @@ export async function flashAll(driver, source, options = {}) {
  */
 export async function update(driver, zipInput, options = {}) {
   const { ZipImageSource } = await import('./zip.js');
-  const source = await ZipImageSource.open(zipInput);
+  let source = await ZipImageSource.open(zipInput);
+
+  // Factory image zips (e.g. volantis-mmb29v-factory-*.zip or Pixel factory zips)
+  // contain an inner `image-<device>-<build>.zip` holding boot.img, system.img, etc.,
+  // alongside outer scripts (flash-all.sh) and bootloader/radio images.
+  // If an inner image zip exists, open it as the primary image source, falling back
+  // to the root zip for files not found in the inner zip (such as bootloader images).
+  const innerZipName = source.listFiles().find((name) => /(^|\/)image-.*\.zip$/i.test(name));
+  let rootSource = source;
+  if (innerZipName) {
+    const innerBytes = await source.getFile(innerZipName);
+    if (innerBytes) {
+      const innerSource = await ZipImageSource.open(innerBytes);
+      source = {
+        async getFile(name) {
+          const res = await innerSource.getFile(name);
+          if (res !== null) return res;
+          return rootSource.getFile(name);
+        },
+        listFiles() {
+          return [...new Set([...innerSource.listFiles(), ...rootSource.listFiles()])];
+        },
+      };
+    }
+  }
+
+  // Support bootloader-*.img and radio-*.img mapping in factory zips.
+  const activeSource = source;
+  source = {
+    async getFile(name) {
+      let res = await activeSource.getFile(name);
+      if (res !== null) return res;
+      if (name === 'bootloader.img') {
+        const blName = rootSource.listFiles().find((n) => /(^|\/)bootloader-.*\.img$/i.test(n));
+        if (blName) return rootSource.getFile(blName);
+      }
+      if (name === 'radio.img') {
+        const radName = rootSource.listFiles().find((n) => /(^|\/)radio-.*\.img$/i.test(n));
+        if (radName) return rootSource.getFile(radName);
+      }
+      return null;
+    },
+    listFiles() {
+      return activeSource.listFiles();
+    },
+  };
+
   if (options.slot === 'all') {
     // Matches the CLI's warning for `fastboot update --slot all <zip>`.
     // Unlike `flashall --slot all` (which forces skipSecondary), `update`
